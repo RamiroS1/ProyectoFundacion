@@ -35,15 +35,21 @@ export const EditorDocumento: React.FC = () => {
       setLoading(true);
       setError(null);
       
+      console.log('EditorDocumento - Inicializando documento:', documentoId);
+      
       // Obtener el documento para saber la plantilla
       const documento = await documentoInstanciaService.getById(documentoId!);
+      console.log('EditorDocumento - Documento encontrado:', documento);
       
       if (!documento) {
+        console.error('EditorDocumento - Documento no encontrado');
         setError('Documento no encontrado');
         return;
       }
       
       setPlantillaId(documento.plantilla_id);
+      console.log('EditorDocumento - Plantilla ID:', documento.plantilla_id);
+      console.log('EditorDocumento - Título del documento:', documento.titulo);
       
       // Cargar campos y valores en paralelo
       await Promise.all([
@@ -60,8 +66,11 @@ export const EditorDocumento: React.FC = () => {
 
   const loadCampos = async (plantillaId: string) => {
     try {
+      console.log('EditorDocumento - Cargando campos para plantilla:', plantillaId);
       // Obtener campos asignados al rol del usuario para esta plantilla
       const camposData = await campoPlantillaService.getCamposByPlantilla(plantillaId);
+      console.log('EditorDocumento - Campos cargados:', camposData.length);
+      console.log('EditorDocumento - Campos:', camposData);
       
       // Organizar campos por área_seccion (tabs)
       const areasUnicas = Array.from(
@@ -73,6 +82,7 @@ export const EditorDocumento: React.FC = () => {
         areasUnicas.push('Campos Generales');
       }
       
+      console.log('EditorDocumento - Tabs:', areasUnicas);
       setTabs(areasUnicas);
       setActiveTab(areasUnicas[0]);
       setCampos(camposData);
@@ -165,6 +175,13 @@ export const EditorDocumento: React.FC = () => {
   const camposActivos = campos.filter(
     (c) => (c.area_seccion || 'Campos Generales') === activeTab
   ).sort((a, b) => (a.orden || 0) - (b.orden || 0));
+
+  console.log('EditorDocumento - Render:');
+  console.log('  - Total campos:', campos.length);
+  console.log('  - Tabs:', tabs);
+  console.log('  - Active tab:', activeTab);
+  console.log('  - Campos activos:', camposActivos.length);
+  console.log('  - Valores cargados:', valores.size);
 
   return (
     <div className="flex-1 bg-gray-50">

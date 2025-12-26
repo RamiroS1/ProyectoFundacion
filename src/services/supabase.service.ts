@@ -218,7 +218,25 @@ export const campoPlantillaService = {
    * RLS automáticamente filtra según el rol del usuario
    */
   async getCamposByPlantilla(plantillaId: string): Promise<CampoPlantillaConPlantilla[]> {
-    await requireAuth();
+    const userId = await requireAuth();
+    const profile = await userProfileService.getCurrentUserProfile();
+    
+    console.log('campoPlantillaService - Buscando campos para plantilla:', plantillaId);
+    console.log('campoPlantillaService - Usuario ID:', userId);
+    console.log('campoPlantillaService - Perfil:', profile);
+    console.log('campoPlantillaService - Rol:', profile?.rol_profesional);
+    console.log('campoPlantillaService - Es Admin:', profile?.rol_profesional === 'ADMIN');
+
+    // Primero intentar sin el inner join para ver si hay campos
+    const { data: camposSimples, error: errorSimples } = await supabase
+      .from('campos_plantilla')
+      .select('*')
+      .eq('plantilla_id', plantillaId);
+
+    console.log('campoPlantillaService - Campos sin join:', camposSimples?.length || 0);
+    if (errorSimples) {
+      console.error('campoPlantillaService - Error obteniendo campos simples:', errorSimples);
+    }
 
     const { data, error } = await supabase
       .from('campos_plantilla')
@@ -233,7 +251,16 @@ export const campoPlantillaService = {
       .order('orden');
 
     if (error) {
+      console.error('campoPlantillaService - Error obteniendo campos:', error);
+      console.error('campoPlantillaService - Código de error:', error.code);
+      console.error('campoPlantillaService - Mensaje:', error.message);
+      console.error('campoPlantillaService - Detalles:', error.details);
       throw new Error(`Error obteniendo campos: ${error.message}`);
+    }
+
+    console.log('campoPlantillaService - Campos encontrados:', data?.length || 0);
+    if (data && data.length > 0) {
+      console.log('campoPlantillaService - Primer campo:', data[0]);
     }
 
     return (data || []).map((campo: any) => ({
