@@ -9,6 +9,7 @@ import { join, extname, basename } from 'path';
 import { fileURLToPath } from 'url';
 import { dirname } from 'path';
 import dotenv from 'dotenv';
+import XLSX from 'xlsx';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -185,9 +186,167 @@ async function uploadFile(filePath, filename) {
 }
 
 /**
- * Crea o actualiza el registro en la base de datos
+ * Extrae campos de un archivo Excel y los guarda en la BD
  */
-async function upsertPlantilla(fileInfo) {
+async function extraerYGuardarCampos(filePath, plantillaId) {
+  try {
+    console.log(`   🔍 Extrayendo campos del archivo Excel...`);
+    
+    const workbook = XLSX.readFile(filePath);
+    const campos = [];
+    
+    for (const sheetName of workbook.SheetNames) {
+      const sheet = workbook.Sheets[sheetName];
+      const camposHoja = extraerCamposDeHoja(sheet, sheetName, plantillaId);
+      campos.push(...camposHoja);
+    }
+    
+    if (campos.length > 0) {
+      await crearCamposEnBD(campos);
+    } else {
+      console.log(`   ⚠️  No se pudieron extraer campos`);
+    }
+  } catch (error) {
+    console.error(`   ⚠️  Error extrayendo campos: ${error.message}`);
+    // No fallar el proceso completo si la extracción falla
+  }
+}
+
+/**
+ * Extrae campos de una hoja Excel (simplificado)
+ */
+function extraerCamposDeHoja(sheet, sheetName, plantillaId) {
+  const campos = [];
+  const data = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '' });
+  
+  // Saltar hojas muy grandes (probablemente listas)
+  if (data.length > 500 || (data.length > 0 && data[0].length > 30)) {
+    return campos;
+  }
+  
+  // Detectar área/sección
+  let areaSeccion = sheetName;
+  for (let i = 0; i < Math.min(10, data.length); i++) {
+    const filaTexto = data[i].join(' ').toLowerCase();
+    if (filaTexto.includes('caracterización') || filaTexto.includes('caracterizacion')) {
+      areaSeccion = 'CARACTERIZACIÓN';
+    } else if (filaTexto.includes('distribución') || filaTexto.includes('distribucion')) {
+      areaSeccion = 'DISTRIBUCIÓN DE ÁREAS';
+    } else if (filaTexto.includes('datos generales')) {
+      areaSeccion = 'DATOS GENERALES';
+    }
+  }
+  
+  // Extraer campos de encabezados
+  if (data.length > 0 && data[0].length <= 20) {
+    const encabezados = data[0];
+    encabezados.forEach((encabezado, colIndex) => {
+      if (!encabezado || String(encabezado).trim() === '') return;
+      
+      const nombreCampo = String(encabezado).trim();
+      if (nombreCampo.length > 100) return;
+      if (nombreCampo.match(/^[A-Z_]+$/)) return;
+      if (nombreCampo.match(/^\d+$/)) return;
+      
+      const codigo = `CAMPO-${sheetName.toUpperCase().substring(0, 10).replace(/[^A-Z0-9]/g, '')}-${colIndex + 1}`;
+      
+      campos.push({
+        plantilla_id: plantillaId,
+        codigo: codigo.replace(/[^A-Z0-9-]/g, '-'),
+        pregunta: nombreCampo,
+        descripcion: `Campo de la hoja "${sheetName}"`,
+        hoja_excel: sheetName,
+        celda_excel: `${String.fromCharCode(65 + colIndex)}1`,
+        area_seccion: areaSeccion,
+        tipo: 'texto', // Por defecto
+        configuracion: { requerido: false },
+        rol_asignado: 'ANALISTA',
+        orden: colIndex + 1
+      });
+    });
+  }
+  
+  // También buscar en formato pregunta-respuesta (columna A pregunta, B respuesta)
+  for (let i = 0; i < Math.min(100, data.length); i++) {
+    const fila = data[i];
+    if (fila.length >= 2 && fila[0] && String(fila[0]).trim() && !String(fila[0]).match(/^[A-Z_]+$/)) {
+      const pregunta = String(fila[0]).trim();
+      if (pregunta.length > 5 && pregunta.length < 100) {
+        const codigo = `CAMPO-${sheetName.toUpperCase().substring(0, 10).replace(/[^A-Z0-9]/g, '')}-Q${i + 1}`;
+        
+        // Evitar duplicados
+        if (!campos.some(c => c.pregunta === pregunta)) {
+          campos.push({
+            plantilla_id: plantillaId,
+            codigo: codigo.replace(/[^A-Z0-9-]/g, '-'),
+            pregunta: pregunta,
+            descripcion: `Campo de la hoja "${sheetName}"`,
+            hoja_excel: sheetName,
+            celda_excel: `A${i + 1}`,
+            area_seccion: areaSeccion,
+            tipo: 'texto',
+            configuracion: { requerido: false },
+            rol_asignado: 'ANALISTA',
+            orden: campos.length + 1
+          });
+        }
+      }
+    }
+  }
+  
+  return campos;
+}
+
+/**
+ * Crea campos en la base de datos
+ */
+async function crearCamposEnBD(campos) {
+  if (campos.length === 0) return;
+  
+  // Insertar en lotes de 50
+  const lotes = [];
+  for (let i = 0; i < campos.length; i += 50) {
+    lotes.push(campos.slice(i, i + 50));
+  }
+  
+  let totalCreados = 0;
+  
+  for (const lote of lotes) {
+    // Verificar cuáles ya existen
+    const codigos = lote.map(c => c.codigo);
+    const { data: existentes } = await supabase
+      .from('campos_plantilla')
+      .select('codigo')
+      .in('codigo', codigos);
+    
+    const codigosExistentes = new Set((existentes || []).map(e => e.codigo));
+    const nuevos = lote.filter(c => !codigosExistentes.has(c.codigo));
+    
+    // Insertar nuevos
+    if (nuevos.length > 0) {
+      const { error: insertError } = await supabase
+        .from('campos_plantilla')
+        .insert(nuevos);
+      
+      if (insertError) {
+        console.error(`   ⚠️  Error insertando algunos campos: ${insertError.message}`);
+      } else {
+        totalCreados += nuevos.length;
+      }
+    }
+  }
+  
+  if (totalCreados > 0) {
+    console.log(`   ✅ ${totalCreados} campo(s) extraído(s) y guardado(s)`);
+  }
+}
+
+/**
+ * Crea o actualiza el registro en la base de datos
+ * @param {Object} fileInfo - Información del archivo subido
+ * @param {string} filePath - Ruta del archivo original en el sistema de archivos
+ */
+async function upsertPlantilla(fileInfo, filePath) {
   const codigo = generateCodigo(fileInfo.originalFilename);
   const nombre = basename(fileInfo.originalFilename, extname(fileInfo.originalFilename));
   
@@ -248,6 +407,13 @@ async function upsertPlantilla(fileInfo) {
       throw new Error(`Error actualizando plantilla: ${updateError.message}`);
     }
     console.log(`   ✅ Plantilla actualizada en BD`);
+    
+    // Extraer campos automáticamente si es Excel
+    if (fileInfo.fileType === 'excel') {
+      await extraerYGuardarCampos(filePath, existing.id);
+    }
+    
+    return existing.id;
   } else {
     console.log(`   📝 Creando registro en BD...`);
     const { data: newPlantilla, error: insertError } = await supabase
@@ -269,6 +435,13 @@ async function upsertPlantilla(fileInfo) {
       throw new Error(`Error creando plantilla: ${insertError.message}`);
     }
     console.log(`   ✅ Plantilla creada en BD (ID: ${newPlantilla.id})`);
+    
+    // Extraer campos automáticamente si es Excel
+    if (fileInfo.fileType === 'excel') {
+      await extraerYGuardarCampos(filePath, newPlantilla.id);
+    }
+    
+    return newPlantilla.id;
   }
 }
 
@@ -306,8 +479,8 @@ async function main() {
         // Subir a Storage
         const fileInfo = await uploadFile(filePath, filename);
         
-        // Crear/actualizar en BD
-        await upsertPlantilla(fileInfo);
+        // Crear/actualizar en BD y extraer campos automáticamente
+        await upsertPlantilla(fileInfo, filePath);
         
       } catch (error) {
         console.error(`   ❌ Error procesando ${filename}:`, error.message);
