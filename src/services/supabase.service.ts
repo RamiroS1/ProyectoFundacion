@@ -24,8 +24,6 @@ import type {
   DocumentoCompleto,
   ProgresoDocumento,
   RolProfesional,
-  TipoCampo,
-  EstadoCampo,
 } from '../types/database.types';
 
 // ============================================================================
@@ -46,20 +44,29 @@ async function requireAuth(): Promise<string> {
 
 export const userProfileService = {
   async getCurrentUserProfile(): Promise<UserProfile | null> {
-    const userId = await requireAuth();
-    
-    const { data, error } = await supabase
-      .from('user_profiles')
-      .select('*')
-      .eq('id', userId)
-      .single();
+    try {
+      const userId = await requireAuth();
+      console.log('Buscando perfil para userId:', userId);
+      
+      const { data, error } = await supabase
+        .from('user_profiles')
+        .select('*')
+        .eq('id', userId)
+        .single();
 
-    if (error) {
-      console.error('Error obteniendo perfil:', error);
+      if (error) {
+        console.error('Error obteniendo perfil:', error);
+        console.error('Código de error:', error.code);
+        console.error('Mensaje:', error.message);
+        return null;
+      }
+
+      console.log('Perfil encontrado:', data);
+      return data;
+    } catch (error) {
+      console.error('Error en getCurrentUserProfile:', error);
       return null;
     }
-
-    return data;
   },
 
   async getCurrentUserRol(): Promise<RolProfesional | null> {
@@ -72,17 +79,39 @@ export const userProfileService = {
     return rol === 'ADMIN';
   },
 
+  async isTester(): Promise<boolean> {
+    const rol = await this.getCurrentUserRol();
+    return rol !== null && rol === 'TESTER';
+  },
+
+  async isAdminOrTester(): Promise<boolean> {
+    const rol = await this.getCurrentUserRol();
+    return rol !== null && (rol === 'ADMIN' || rol === 'TESTER');
+  },
+
   async getAllProfiles(): Promise<UserProfile[]> {
+    const userId = await requireAuth();
+    const profile = await this.getCurrentUserProfile();
+    
+    console.log('Usuario actual:', userId);
+    console.log('Perfil actual:', profile);
+    console.log('Rol actual:', profile?.rol_profesional);
+    
+    if (profile?.rol_profesional !== 'ADMIN') {
+      throw new Error('Acceso denegado: Solo administradores pueden ver todos los perfiles');
+    }
+
     const { data, error } = await supabase
       .from('user_profiles')
       .select('*')
-      .eq('activo', true)
-      .order('nombre_completo');
+      .order('creado_en', { ascending: false });
 
     if (error) {
+      console.error('Error en consulta getAllProfiles:', error);
       throw new Error(`Error obteniendo perfiles: ${error.message}`);
     }
 
+    console.log('Perfiles obtenidos:', data?.length || 0);
     return data || [];
   },
 };
@@ -92,6 +121,9 @@ export const userProfileService = {
 // ============================================================================
 
 export const plantillaService = {
+  /**
+   * Obtiene todas las plantillas (solo ADMIN)
+   */
   async getAll(): Promise<PlantillaDocumento[]> {
     const isAdmin = await userProfileService.isAdmin();
     if (!isAdmin) {
@@ -106,6 +138,26 @@ export const plantillaService = {
 
     if (error) {
       throw new Error(`Error obteniendo plantillas: ${error.message}`);
+    }
+
+    return data || [];
+  },
+
+  /**
+   * Obtiene plantillas disponibles para el usuario actual
+   * RLS filtra automáticamente: solo plantillas con campos asignados a su rol
+   */
+  async getPlantillasDisponibles(): Promise<PlantillaDocumento[]> {
+    await requireAuth();
+
+    const { data, error } = await supabase
+      .from('plantillas_documento')
+      .select('*')
+      .eq('activa', true)
+      .order('nombre');
+
+    if (error) {
+      throw new Error(`Error obteniendo plantillas disponibles: ${error.message}`);
     }
 
     return data || [];
@@ -273,16 +325,24 @@ export const documentoInstanciaService = {
       .in('id', plantillaIds);
 
     // Crear mapa de plantillas para acceso rápido
-    const plantillaMap = new Map(
+    const plantillaMap = new Map<string, { nombre: string; codigo: string }>(
       (plantillas || []).map((p: any) => [p.id, { nombre: p.nombre, codigo: p.codigo }])
     );
 
+    // Eliminar duplicados por ID (por si acaso hay duplicados en la consulta)
+    const documentosUnicos = Array.from(
+      new Map(documentos.map((d: any) => [d.id, d])).values()
+    );
+
     // Transformar documentos agregando información de plantilla
-    return documentos.map((doc: any) => {
-      const plantillaInfo = plantillaMap.get(doc.plantilla_id) || { 
-        nombre: 'Documento', 
-        codigo: doc.plantilla_id?.substring(0, 8) || 'N/A' 
-      };
+    return documentosUnicos.map((doc: any) => {
+      const plantillaEncontrada = plantillaMap.get(doc.plantilla_id);
+      const plantillaInfo: { nombre: string; codigo: string } = plantillaEncontrada 
+        ? { nombre: plantillaEncontrada.nombre, codigo: plantillaEncontrada.codigo }
+        : { 
+            nombre: 'Documento', 
+            codigo: doc.plantilla_id?.substring(0, 8) || 'N/A' 
+          };
 
       return {
         ...doc,
@@ -330,6 +390,56 @@ export const documentoInstanciaService = {
     }
 
     return data;
+  },
+
+  /**
+   * Busca o crea una instancia de documento para el usuario actual
+   * Si ya existe una instancia para esta plantilla y usuario, retorna la más reciente
+   * Si no existe, crea una nueva
+   * IMPORTANTE: Siempre retorna solo UN documento por plantilla/usuario
+   */
+  async findOrCreateDocumento(plantillaId: string): Promise<DocumentoInstancia> {
+    const userId = await requireAuth();
+
+    // Buscar si ya existe una instancia para este usuario y plantilla
+    // Usar order by y limit para obtener solo la más reciente
+    const { data: existingDocs, error: searchError } = await supabase
+      .from('documentos_instancia')
+      .select('*')
+      .eq('plantilla_id', plantillaId)
+      .eq('creado_por', userId)
+      .order('creado_en', { ascending: false });
+
+    if (searchError) {
+      throw new Error(`Error buscando documento: ${searchError.message}`);
+    }
+
+    // Si existe al menos uno, retornar el más reciente
+    if (existingDocs && existingDocs.length > 0) {
+      return existingDocs[0];
+    }
+
+    // Si no existe, crear una nueva instancia
+    // Generar número de documento único
+    const numeroDoc = `DOC-${Date.now()}-${Math.floor(Math.random() * 1000000)}`;
+    
+    const { data: newDoc, error } = await supabase
+      .from('documentos_instancia')
+      .insert({
+        plantilla_id: plantillaId,
+        numero_documento: numeroDoc,
+        titulo: `Nuevo Documento - ${new Date().toLocaleDateString()}`,
+        estado: 'BORRADOR',
+        creado_por: userId,
+      })
+      .select()
+      .single();
+
+    if (error) {
+      throw new Error(`Error creando documento: ${error.message}`);
+    }
+
+    return newDoc;
   },
 
   async update(id: string, documento: DocumentoInstanciaUpdate): Promise<DocumentoInstancia> {
@@ -410,19 +520,25 @@ export const valorCampoService = {
         *,
         campos_plantilla!inner (*)
       `)
-      .eq('documento_instancia_id', documentoId)
-      .order('campos_plantilla.orden');
+      .eq('documento_instancia_id', documentoId);
 
     if (error) {
       throw new Error(`Error obteniendo valores: ${error.message}`);
     }
 
-    return (data || []).map((valor: any) => ({
+    // Ordenar después de obtener los datos (Supabase no permite ordenar por campos de relaciones)
+    const valoresOrdenados = (data || []).map((valor: any) => ({
       ...valor,
       campo: Array.isArray(valor.campos_plantilla) 
         ? valor.campos_plantilla[0] 
         : valor.campos_plantilla,
-    }));
+    })).sort((a: any, b: any) => {
+      const ordenA = a.campo?.orden || 0;
+      const ordenB = b.campo?.orden || 0;
+      return ordenA - ordenB;
+    });
+
+    return valoresOrdenados;
   },
 
   async getById(id: string): Promise<ValorCampo | null> {

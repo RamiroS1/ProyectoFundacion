@@ -13,6 +13,8 @@ import { PublicRoute } from './components/Auth/PublicRoute';
 import { MainLayout } from './components/Layout/MainLayout';
 import { Welcome } from './components/Dashboard/Welcome';
 import { MisDocumentos } from './components/Documents/MisDocumentos';
+import { EditorDocumento } from './components/Documents/EditorDocumento';
+import { Permisos } from './components/Admin/Permisos';
 
 const App: React.FC = () => {
   return (
@@ -54,6 +56,26 @@ const App: React.FC = () => {
               <ProtectedRoute>
                 <MainLayout>
                   <MisDocumentos />
+                </MainLayout>
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/documentos/:documentoId"
+            element={
+              <ProtectedRoute>
+                <MainLayout>
+                  <EditorDocumento />
+                </MainLayout>
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/permisos"
+            element={
+              <ProtectedRoute>
+                <MainLayout>
+                  <Permisos />
                 </MainLayout>
               </ProtectedRoute>
             }

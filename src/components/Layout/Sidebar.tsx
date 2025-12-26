@@ -3,7 +3,7 @@
 // Sidebar de navegación para el usuario
 // ============================================================================
 
-import React from 'react';
+import React, { useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../../contexts/AuthContext';
 import { supabase } from '../../supabaseClient';
@@ -24,6 +24,11 @@ interface SidebarProps {
 export const Sidebar: React.FC<SidebarProps> = ({ items }) => {
   const { profile } = useAuth();
   const navigate = useNavigate();
+  
+  // Debug: Log del perfil
+  useEffect(() => {
+    console.log('Sidebar - Perfil recibido:', profile);
+  }, [profile]);
 
   return (
     <div className="w-64 bg-white border-r border-gray-200 h-full flex flex-col">

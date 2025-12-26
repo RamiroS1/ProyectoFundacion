@@ -9,7 +9,8 @@ export type RolProfesional =
   | 'ANALISTA'
   | 'AUDITOR'
   | 'GERENTE'
-  | 'ADMIN';
+  | 'ADMIN'
+  | 'TESTER';
 
 export type TipoCampo = 
   | 'texto'

@@ -30,7 +30,8 @@ DO $$ BEGIN
     'ANALISTA',
     'AUDITOR',
     'GERENTE',
-    'ADMIN'  -- Administrador del sistema
+    'ADMIN',  -- Administrador del sistema
+    'TESTER'  -- Tester para desarrollo (acceso completo)
   );
 EXCEPTION
   WHEN duplicate_object THEN null;
@@ -352,6 +353,18 @@ BEGIN
 END;
 $$;
 
+-- Verificar si es tester (para desarrollo - acceso completo)
+CREATE OR REPLACE FUNCTION es_tester(user_id UUID)
+RETURNS BOOLEAN
+LANGUAGE plpgsql
+SECURITY DEFINER
+STABLE
+AS $$
+BEGIN
+  RETURN obtener_rol_profesional(user_id) = 'TESTER'::rol_profesional;
+END;
+$$;
+
 -- Verificar si usuario tiene acceso a un campo (por rol)
 CREATE OR REPLACE FUNCTION usuario_tiene_acceso_campo(
   user_id UUID,
@@ -366,8 +379,8 @@ DECLARE
   rol_usuario rol_profesional;
   rol_campo rol_profesional;
 BEGIN
-  -- Administradores tienen acceso a todo
-  IF es_administrador(user_id) THEN
+  -- Administradores y testers tienen acceso a todo
+  IF es_administrador(user_id) OR es_tester(user_id) THEN
     RETURN true;
   END IF;
   

@@ -37,14 +37,18 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
   const [profile, setProfile] = useState<UserProfile | null>(null);
   const [loading, setLoading] = useState(true);
 
-  const refreshProfile = async () => {
-    if (!user) {
+  const refreshProfile = async (userId?: string) => {
+    const userIdToUse = userId || user?.id;
+    if (!userIdToUse) {
+      console.log('No hay usuario, limpiando perfil');
       setProfile(null);
       return;
     }
 
     try {
+      console.log('Cargando perfil para usuario:', userIdToUse);
       const userProfile = await userProfileService.getCurrentUserProfile();
+      console.log('Perfil cargado:', userProfile);
       setProfile(userProfile);
     } catch (error) {
       console.error('Error obteniendo perfil:', error);
@@ -54,10 +58,16 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
 
   useEffect(() => {
     // Obtener sesión inicial
-    supabase.auth.getSession().then(({ data: { session } }) => {
+    supabase.auth.getSession().then(({ data: { session }, error }) => {
+      console.log('AuthContext - Sesión obtenida:', session);
+      console.log('AuthContext - Error:', error);
+      console.log('AuthContext - Usuario:', session?.user);
       setUser(session?.user ?? null);
       if (session?.user) {
-        refreshProfile();
+        console.log('AuthContext - Llamando refreshProfile para usuario:', session.user.id);
+        refreshProfile(session.user.id);
+      } else {
+        console.log('AuthContext - No hay usuario en la sesión');
       }
       setLoading(false);
     });
@@ -65,11 +75,14 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
     // Escuchar cambios en la autenticación
     const {
       data: { subscription },
-    } = supabase.auth.onAuthStateChange((_event, session) => {
+    } = supabase.auth.onAuthStateChange((event, session) => {
+      console.log('AuthContext - Cambio de estado:', event, session?.user?.id);
       setUser(session?.user ?? null);
       if (session?.user) {
-        refreshProfile();
+        console.log('AuthContext - Usuario autenticado, refrescando perfil');
+        refreshProfile(session.user.id);
       } else {
+        console.log('AuthContext - Usuario desautenticado');
         setProfile(null);
       }
       setLoading(false);

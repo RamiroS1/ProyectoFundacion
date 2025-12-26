@@ -3,9 +3,10 @@
 // Layout principal con sidebar y área de contenido
 // ============================================================================
 
-import React from 'react';
+import React, { useEffect } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { Sidebar } from './Sidebar';
+import { useAuth } from '../../contexts/AuthContext';
 
 interface SidebarItem {
   id: string;
@@ -17,6 +18,14 @@ interface SidebarItem {
 export const MainLayout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const navigate = useNavigate();
   const location = useLocation();
+  const { profile } = useAuth();
+  const isAdmin = profile?.rol_profesional === 'ADMIN';
+  
+  // Debug: Log del perfil
+  useEffect(() => {
+    console.log('MainLayout - Perfil:', profile);
+    console.log('MainLayout - Es Admin:', isAdmin);
+  }, [profile, isAdmin]);
 
   const sidebarItems: SidebarItem[] = [
     {
@@ -39,6 +48,20 @@ export const MainLayout: React.FC<{ children: React.ReactNode }> = ({ children }
         </svg>
       ),
     },
+    ...(isAdmin
+      ? [
+          {
+            id: 'permisos',
+            label: 'Permisos',
+            path: '/permisos',
+            icon: (
+              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z" />
+              </svg>
+            ),
+          },
+        ]
+      : []),
   ];
 
   const itemsWithClick = sidebarItems.map((item) => ({

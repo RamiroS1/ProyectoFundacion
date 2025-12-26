@@ -34,7 +34,11 @@ CREATE POLICY "Usuarios ven su propio perfil"
 CREATE POLICY "Administradores ven todos los perfiles"
   ON user_profiles
   FOR SELECT
-  USING (es_administrador(auth.uid()));
+  USING (
+    es_administrador(auth.uid()) 
+    OR 
+    obtener_rol_profesional(auth.uid()) = 'TESTER'
+  );
 
 -- Usuarios pueden actualizar su propio perfil (campos limitados)
 -- Nota: Las restricciones de que no puedan cambiar rol o desactivarse
@@ -87,18 +91,32 @@ DROP POLICY IF EXISTS "Solo admin desactiva plantillas" ON plantillas_documento;
 DROP POLICY IF EXISTS "Solo admin actualiza plantillas" ON plantillas_documento;
 DROP POLICY IF EXISTS "Solo admin elimina plantillas" ON plantillas_documento;
 
--- SOLO administradores pueden ver plantillas
+-- Administradores ven todas las plantillas
+-- Usuarios normales ven solo plantillas que tienen campos asignados a su rol
 CREATE POLICY "Solo admin ve plantillas"
   ON plantillas_documento
   FOR SELECT
-  USING (es_administrador(auth.uid()));
+  USING (
+    es_administrador(auth.uid())
+    OR
+    -- Verificar si es TESTER usando función (evita recursión)
+    obtener_rol_profesional(auth.uid()) = 'TESTER'
+    OR
+    -- Usuario puede ver plantilla si tiene campos asignados a su rol
+    EXISTS (
+      SELECT 1
+      FROM campos_plantilla cp
+      WHERE cp.plantilla_id = plantillas_documento.id
+        AND cp.rol_asignado = obtener_rol_profesional(auth.uid())
+    )
+  );
 
 -- SOLO administradores pueden crear plantillas
 CREATE POLICY "Solo admin crea plantillas"
   ON plantillas_documento
   FOR INSERT
   WITH CHECK (
-    es_administrador(auth.uid()) AND
+    (es_administrador(auth.uid()) OR obtener_rol_profesional(auth.uid()) = 'TESTER') AND
     creado_por = auth.uid()
   );
 
@@ -139,31 +157,33 @@ CREATE POLICY "Usuarios ven solo campos de su rol"
   USING (
     es_administrador(auth.uid())
     OR
+    obtener_rol_profesional(auth.uid()) = 'TESTER'
+    OR
     rol_asignado = obtener_rol_profesional(auth.uid())
   );
 
--- INSERT: Solo administradores pueden crear campos
+-- INSERT: Solo administradores y testers pueden crear campos
 CREATE POLICY "Solo admin crea campos"
   ON campos_plantilla
   FOR INSERT
   WITH CHECK (
-    es_administrador(auth.uid()) AND
-    -- Verificar que la plantilla existe y el admin puede accederla
+    (es_administrador(auth.uid()) OR (SELECT rol_profesional FROM user_profiles WHERE id = auth.uid() AND activo = true) = 'TESTER') AND
+    -- Verificar que la plantilla existe y el admin/tester puede accederla
     EXISTS (
       SELECT 1
       FROM plantillas_documento
       WHERE id = campos_plantilla.plantilla_id
-        AND es_administrador(auth.uid())
+        AND (es_administrador(auth.uid()) OR es_tester(auth.uid()))
     )
   );
 
--- UPDATE: Solo administradores pueden modificar campos
--- (Los campos son relativamente inmutables, pero admin puede ajustar)
+-- UPDATE: Solo administradores y testers pueden modificar campos
+-- (Los campos son relativamente inmutables, pero admin/tester puede ajustar)
 CREATE POLICY "Solo admin actualiza campos"
   ON campos_plantilla
   FOR UPDATE
-  USING (es_administrador(auth.uid()))
-  WITH CHECK (es_administrador(auth.uid()));
+  USING (es_administrador(auth.uid()) OR (SELECT rol_profesional FROM user_profiles WHERE id = auth.uid() AND activo = true) = 'TESTER')
+  WITH CHECK (es_administrador(auth.uid()) OR (SELECT rol_profesional FROM user_profiles WHERE id = auth.uid() AND activo = true) = 'TESTER');
 
 -- DELETE: Solo administradores pueden eliminar campos
 CREATE POLICY "Solo admin elimina campos"
@@ -193,6 +213,8 @@ CREATE POLICY "Usuarios ven instancias con sus campos"
   USING (
     es_administrador(auth.uid())
     OR
+    obtener_rol_profesional(auth.uid()) = 'TESTER'
+    OR
     -- Usuario es el creador del documento
     creado_por = auth.uid()
     OR
@@ -207,20 +229,15 @@ CREATE POLICY "Usuarios ven instancias con sus campos"
   );
 
 -- INSERT: Permitir que el trigger cree instancias para nuevos usuarios
--- También administradores pueden crear instancias
--- Nota: Permitimos inserción si creado_por = auth.uid() (caso normal) o si
--- el creado_por existe en auth.users (caso del trigger SECURITY DEFINER)
+-- También administradores y testers pueden crear instancias
+-- Nota: Usamos función usuario_existe_en_auth() para evitar problemas de RLS
 CREATE POLICY "Trigger puede crear instancias para usuarios"
   ON documentos_instancia
   FOR INSERT
   WITH CHECK (
     (
       creado_por = auth.uid() OR
-      EXISTS (
-        SELECT 1 
-        FROM auth.users 
-        WHERE id = documentos_instancia.creado_por
-      )
+      usuario_existe_en_auth(creado_por)
     )
     AND
     EXISTS (
@@ -236,7 +253,7 @@ CREATE POLICY "Admin puede crear instancias"
   ON documentos_instancia
   FOR INSERT
   WITH CHECK (
-    es_administrador(auth.uid()) AND
+    (es_administrador(auth.uid()) OR obtener_rol_profesional(auth.uid()) = 'TESTER') AND
     creado_por = auth.uid()
   );
 
@@ -266,17 +283,21 @@ DROP POLICY IF EXISTS "Usuarios crean valores de sus campos" ON valores_campo;
 DROP POLICY IF EXISTS "Usuarios actualizan valores de sus campos" ON valores_campo;
 
 -- SELECT: Usuarios ven SOLO valores de campos asignados a su rol
+-- Administradores y testers ven TODOS los valores
 CREATE POLICY "Usuarios ven valores de sus campos"
   ON valores_campo
   FOR SELECT
   USING (
     es_administrador(auth.uid())
     OR
+    obtener_rol_profesional(auth.uid()) = 'TESTER'
+    OR
     usuario_tiene_acceso_campo(auth.uid(), campo_plantilla_id)
   );
 
 -- INSERT: Usuarios pueden crear valores para campos asignados a su rol
 -- (Primera vez que se llena un campo)
+-- Administradores y testers pueden crear valores para cualquier campo
 CREATE POLICY "Usuarios crean valores de sus campos"
   ON valores_campo
   FOR INSERT
@@ -284,6 +305,8 @@ CREATE POLICY "Usuarios crean valores de sus campos"
     editado_por = auth.uid() AND
     (
       es_administrador(auth.uid())
+      OR
+      obtener_rol_profesional(auth.uid()) = 'TESTER'
       OR
       usuario_tiene_acceso_campo(auth.uid(), campo_plantilla_id)
     ) AND
@@ -294,6 +317,8 @@ CREATE POLICY "Usuarios crean valores de sus campos"
       WHERE di.id = valores_campo.documento_instancia_id
         AND (
           es_administrador(auth.uid())
+          OR
+          obtener_rol_profesional(auth.uid()) = 'TESTER'
           OR
           EXISTS (
             SELECT 1
@@ -307,6 +332,7 @@ CREATE POLICY "Usuarios crean valores de sus campos"
 
 -- UPDATE: Usuarios pueden actualizar valores de campos asignados a su rol
 -- CRÍTICO: Esta es la operación más común del sistema
+-- Administradores y testers pueden actualizar cualquier valor
 CREATE POLICY "Usuarios actualizan valores de sus campos"
   ON valores_campo
   FOR UPDATE
@@ -314,6 +340,8 @@ CREATE POLICY "Usuarios actualizan valores de sus campos"
     editado_por = auth.uid() AND
     (
       es_administrador(auth.uid())
+      OR
+      obtener_rol_profesional(auth.uid()) = 'TESTER'
       OR
       usuario_tiene_acceso_campo(auth.uid(), campo_plantilla_id)
     )
@@ -341,11 +369,14 @@ DROP POLICY IF EXISTS "Usuarios ven historial de sus campos" ON historial_valore
 DROP POLICY IF EXISTS "Solo sistema crea historial" ON historial_valores_campo;
 
 -- SELECT: Usuarios ven historial de campos asignados a su rol
+-- Administradores y testers ven TODO el historial
 CREATE POLICY "Usuarios ven historial de sus campos"
   ON historial_valores_campo
   FOR SELECT
   USING (
     es_administrador(auth.uid())
+    OR
+    obtener_rol_profesional(auth.uid()) = 'TESTER'
     OR
     EXISTS (
       SELECT 1
